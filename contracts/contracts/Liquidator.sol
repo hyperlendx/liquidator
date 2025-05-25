@@ -9,12 +9,14 @@ import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.s
 
 import { ILiquidSwap } from "./interfaces/ILiquidSwap.sol";
 import { IPool } from "./interfaces/IPool.sol";
+import { IWrappedHype } from "./interfaces/IWrappedHype.sol";
 
 contract Liquidator is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     IPool public pool;
     ILiquidSwap public liquidSwapRouter = ILiquidSwap(0x744489Ee3d540777A66f2cf297479745e0852f7A);
+    IWrappedHype public WHYPE = IWrappedHype(0x5555555555555555555555555555555555555555);
 
     constructor(address _pool) Ownable(msg.sender) {
         pool = IPool(_pool);
@@ -24,7 +26,7 @@ contract Liquidator is Ownable, ReentrancyGuard {
         //find required debt amount
         if (_debtAmount == type(uint256).max){
             address dToken = (IPool(pool).getReserveData(_debt)).variableDebtTokenAddress;
-            _debtAmount = IERC20(dToken).balanceOf(_user);
+            _debtAmount = IERC20(dToken).balanceOf(_user) / 2;
         }
 
         LiquidationParams memory liqParams = LiquidationParams({
@@ -48,6 +50,8 @@ contract Liquidator is Ownable, ReentrancyGuard {
         uint256 minAmountOut;
     }
 
+    event Balance(uint256 amount);
+
     function executeOperation(
         address debtAsset,
         uint256 amount,
@@ -61,7 +65,7 @@ contract Liquidator is Ownable, ReentrancyGuard {
         LiquidationParams memory liqParams = abi.decode(params, (LiquidationParams));
 
         //liquidate user
-        IERC20(liqParams.collateral).approve(address(pool), type(uint256).max);
+        IERC20(debtAsset).approve(address(pool), type(uint256).max);
         pool.liquidationCall(liqParams.collateral, debtAsset, liqParams.user, liqParams.debtToCover, false);
 
         //swap collateral to debtAsset
@@ -83,8 +87,11 @@ contract Liquidator is Ownable, ReentrancyGuard {
         //swap
         liquidSwapRouter.executeMultiHopSwap(liqParams.tokens, balance, liqParams.minAmountOut, liqParams.hops);
 
-        //approve pool so it can pull the funds to repay the flashloan
-        IERC20(debtAsset).safeIncreaseAllowance(msg.sender, amount + premium);
+        if (address(this).balance > 0){
+            WHYPE.deposit{value: address(this).balance}();
+        }
+
+        require(IERC20(debtAsset).balanceOf(address(this)) >= amount + premium, "insufficient output of the swap");
 
         return true;
     }

@@ -65,13 +65,13 @@ async function prepareAndSend(user, pair, positions){
     const debtAmount = parseFloat((Number(posBorrow.amount) / Math.pow(10, Number(posBorrow.decimals)))).toFixed(Number(posBorrow.decimals))
 
     console.log(`- collateral: ${collateralAmount} ${supply.underlying}`)
-    console.log(`- debt: ${debtAmount} ${borrow.underlying}`)
+    console.log(`- debt: ${debtAmount * CLOSE_FACTOR} ${borrow.underlying}`)
 
     //get swap route
     let swap = (await axios.get(`https://api.liqd.ag/route?tokenA=${supply.underlying}&tokenB=${borrow.underlying}&amountIn=${collateralAmount}&multiHop=true`)).data
 
     const amountOutRaw = parseFloat(Number(swap.data.bestPath.amountOut) * Math.pow(10, Number(posBorrow.decimals))).toFixed(0)
-    const debtToSeize = Number(swap.data.bestPath.amountOut) > debtAmount ? MAX_AMOUNT : amountOutRaw;
+    const debtToSeize = Number(swap.data.bestPath.amountOut) > (debtAmount * CLOSE_FACTOR) ? MAX_AMOUNT : amountOutRaw;
     
     console.log(`- seizing ${debtToSeize == MAX_AMOUNT ? "MAX" : debtToSeize} of debt`)
 
@@ -110,7 +110,7 @@ async function sendTx(user, collateral, debt, debtAmount, hops, tokens, minAmoun
     console.log('Tx confirmed!');
 
     //send profit to another wallet
-    let profit = await contract.rescueTokens(collateral, 0, true, process.env.PROFIT_RECEIVER)
+    let profit = await contract.rescueTokens(debt, 0, true, process.env.PROFIT_RECEIVER)
     console.log(`removing profit: ${profit.hash}`)
     await profit.wait()
 }
