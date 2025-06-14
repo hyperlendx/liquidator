@@ -3,6 +3,47 @@ import axios from 'axios';
 import { ethers } from 'ethers';
 import { AssetValue, Position, PositionInfo, Wallet } from '../types';
 
+export interface UserPositions {
+    address: string;
+    pair: [AssetValue, AssetValue],
+    positions: PositionInfo
+}
+
+export async function getLiquidatablePositions(wallets: Wallet[]): Promise<UserPositions[]> {
+    const returnPositions: UserPositions[] = [];
+
+    for (const wallet of wallets) {
+        const positions: PositionInfo = await getDetailedPosition(wallet.wallet_address);
+
+        const supply: AssetValue[] = positions.supply.map((pos): AssetValue => ({
+            underlying: pos.underlying,
+            value:
+                (Number(pos.amount) / Math.pow(10, Number(pos.decimals))) *
+                (Number(pos.price) / Math.pow(10, 8))
+        }));
+
+        const borrow: AssetValue[] = positions.borrow.map((pos): AssetValue => ({
+            underlying: pos.underlying,
+            value:
+                (Number(pos.amount) / Math.pow(10, Number(pos.decimals))) *
+                (Number(pos.price) / Math.pow(10, 8))
+        }));
+
+        console.log(`Found liquidation for ${wallet.wallet_address}`);
+
+        //create pair of largest borrow-largest collateral to maximize profit when liquidating
+        const [pair]: [AssetValue, AssetValue][] = pairLargestSupplyWithLargestBorrow(supply, borrow);
+
+        returnPositions.push({
+            address: wallet.wallet_address,
+            pair: pair,
+            positions: positions
+        })
+    }
+
+    return returnPositions;
+}
+
 export function pairLargestSupplyWithLargestBorrow(
     supplyBalances: AssetValue[],
     borrowBalances: AssetValue[]

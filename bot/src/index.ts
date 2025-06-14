@@ -7,7 +7,9 @@ import { prepareHops } from './utils/swap';
 import {
     pairLargestSupplyWithLargestBorrow,
     getDetailedPosition,
-    getLiquidatableWallets
+    getLiquidatableWallets,
+    getLiquidatablePositions,
+    UserPositions
 } from './utils/positions';
 
 dotenv.config();
@@ -24,6 +26,8 @@ import {
     AssetValue,
     SwapResponse
 } from './types';
+import { sendTx } from './utils/tx';
+import { getQuoteLiquidSwap, QuoteResponse } from './swaps/liquidSwap';
 
 run();
 
@@ -33,29 +37,14 @@ cron.schedule('* * * * *', async (): Promise<void> => {
 });
 
 async function run(): Promise<void> {
+    //find all wallets that can be liquidated
     const wallets: Wallet[] = await getLiquidatableWallets();
+    //find their positions
+    const userPositions: UserPositions[] = await getLiquidatablePositions(wallets);
 
-    for (const wallet of wallets) {
-        const positions: PositionInfo = await getDetailedPosition(wallet.wallet_address);
-
-        const supply: AssetValue[] = positions.supply.map((pos): AssetValue => ({
-            underlying: pos.underlying,
-            value:
-                (Number(pos.amount) / Math.pow(10, Number(pos.decimals))) *
-                (Number(pos.price) / Math.pow(10, 8))
-        }));
-
-        const borrow: AssetValue[] = positions.borrow.map((pos): AssetValue => ({
-            underlying: pos.underlying,
-            value:
-                (Number(pos.amount) / Math.pow(10, Number(pos.decimals))) *
-                (Number(pos.price) / Math.pow(10, 8))
-        }));
-
-        console.log(`Found liquidation for ${wallet.wallet_address}`);
-
-        const [pair]: [AssetValue, AssetValue][] = pairLargestSupplyWithLargestBorrow(supply, borrow);
-        await prepareAndSend(wallet.wallet_address, pair, positions);
+    //for each liquidatable user
+    for (let pos of userPositions){
+        await prepareAndSend(pos.address, pos.pair, pos.positions);
     }
 }
 
@@ -66,51 +55,48 @@ async function prepareAndSend(
 ): Promise<void> {
     const [supply, borrow] = pair;
 
-    const pos: Position | undefined = positions.supply.find(
+    const posCollateral: Position | undefined = positions.supply.find(
         (e) => e.underlying === supply.underlying
     );
     const posBorrow: Position | undefined = positions.borrow.find(
         (e) => e.underlying === borrow.underlying
     );
 
-    if (!pos || !posBorrow) {
+    if (!posCollateral || !posBorrow) {
         console.error('Position not found');
         return;
     }
 
     const collateralAmount: string = (
-        (Number(pos.amount) / Math.pow(10, Number(pos.decimals))) * CLOSE_FACTOR
-    ).toFixed(Number(pos.decimals));
+        (Number(posCollateral.amount) / Math.pow(10, Number(posCollateral.decimals))) * CLOSE_FACTOR
+    ).toFixed(Number(posCollateral.decimals));
 
     const debtAmount: string = (
         Number(posBorrow.amount) / Math.pow(10, Number(posBorrow.decimals))
     ).toFixed(Number(posBorrow.decimals));
 
+    console.log(`- user: ${user}`)
     console.log(`- collateral: ${collateralAmount} ${supply.underlying}`);
-    console.log(`- debt: ${Number(debtAmount) * CLOSE_FACTOR} ${borrow.underlying}`);
+    console.log(`- liquidatable debt: ${Number(debtAmount) * CLOSE_FACTOR} ${borrow.underlying}`);
 
-    const swap: SwapResponse = (
-        await axios.get<SwapResponse>(
-            `https://api.liqd.ag/route?tokenA=${supply.underlying}&tokenB=${borrow.underlying}&amountIn=${collateralAmount}&multiHop=true`
-        )
-    ).data;
 
-    const amountOutRaw: string = (
-        Number(swap.data.bestPath.amountOut) *
-        Math.pow(10, Number(posBorrow.decimals))
-    ).toFixed(0);
+    //get quotes for atomic liquidation
+    // const liquidSwapQuote: QuoteResponse = getQuoteLiquidSwap(supply.underlying, borrow.underlying, Number(collateralAmount));
+
+    //TODO move quote selection to another file, so we only get best quote result here
+    const bestSwap: QuoteResponse = await getQuoteLiquidSwap(supply.underlying, borrow.underlying, Number(collateralAmount));
 
     const debtToSeize: string =
-        Number(swap.data.bestPath.amountOut) > Number(debtAmount) * CLOSE_FACTOR
+        bestSwap.amount > Number(debtAmount) * CLOSE_FACTOR
             ? MAX_AMOUNT
-            : amountOutRaw;
+            : bestSwap.rawAmount;
 
     console.log(`- seizing ${debtToSeize === MAX_AMOUNT ? 'MAX' : debtToSeize} of debt`);
 
-    const hops: TokenHop[][] = prepareHops(swap.data);
+    const hops: TokenHop[][] = prepareHops(bestSwap.data);
 
-    const tokens: string[] = [swap.data.bestPath.hop[0].tokenIn];
-    for (const hop of swap.data.bestPath.hop || []) {
+    const tokens: string[] = [bestSwap.data.bestPath.hop[0].tokenIn];
+    for (const hop of bestSwap.data.bestPath.hop || []) {
         tokens.push(hop.tokenOut);
     }
 
@@ -123,57 +109,4 @@ async function prepareAndSend(
         tokens,
         0
     );
-}
-
-async function sendTx(
-    user: string,
-    collateral: string,
-    debt: string,
-    debtAmount: string,
-    hops: TokenHop[][],
-    tokens: string[],
-    minAmountOut: number
-): Promise<void> {
-    const provider: ethers.JsonRpcProvider = new ethers.JsonRpcProvider(
-        process.env.SEND_RPC
-    );
-    const signer: ethers.Wallet = new ethers.Wallet(
-        String(process.env.PRIVATE_KEY),
-        provider
-    );
-
-    const abi: string[] = [
-        `function liquidate(address _user, address _collateral, address _debt, uint256 _debtAmount, tuple(address tokenIn, address tokenOut, uint8 routerIndex, uint24 fee, uint256 amountIn, bool stable)[][] _hops, address[] _tokens, uint256 _minAmountOut)`,
-        `function rescueTokens(address _token, uint256 _amount, bool _max, address _to)`
-    ];
-
-    const contract: ethers.Contract = new ethers.Contract(
-        String(process.env.LIQUIDATOR),
-        abi,
-        signer
-    );
-
-    const tx: ethers.ContractTransactionResponse = await contract.liquidate(
-        user,
-        collateral,
-        debt,
-        debtAmount,
-        hops,
-        tokens,
-        minAmountOut
-    );
-
-    console.log('Tx sent:', tx.hash);
-    await tx.wait();
-    console.log('Tx confirmed!');
-
-    const profitTx: ethers.ContractTransactionResponse = await contract.rescueTokens(
-        debt,
-        0,
-        true,
-        String(process.env.PROFIT_RECEIVER)
-    );
-
-    console.log(`Removing profit: ${profitTx.hash}`);
-    await profitTx.wait();
 }
