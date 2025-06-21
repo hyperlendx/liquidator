@@ -26,10 +26,10 @@ async function run(){
     const wallets = await getLiquidatableWallets()
 
     for (let wallet of wallets){
-        if (attempts[user] && attempts[user] > 15){
+        if (attempts[wallet.wallet_address] && attempts[wallet.wallet_address] > 15){
             attempts[user] = 0;
         }
-        if (attempts[user] && attempts[user] > 3){
+        if (attempts[wallet.wallet_address] && attempts[wallet.wallet_address] > 3){
             continue;
         }
 
