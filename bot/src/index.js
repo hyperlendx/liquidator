@@ -20,10 +20,19 @@ cron.schedule('* * * * *', async () => {
     run()
 });
 
+let attempts = {}
+
 async function run(){
     const wallets = await getLiquidatableWallets()
 
     for (let wallet of wallets){
+        if (attempts[user] && attempts[user] > 15){
+            attempts[user] = 0;
+        }
+        if (attempts[user] && attempts[user] > 3){
+            continue;
+        }
+
         //get detailed users position
         const positions = await getDetailedPosition(wallet.wallet_address)
 
@@ -66,6 +75,12 @@ async function prepareAndSend(user, pair, positions){
 
     console.log(`- collateral: ${collateralAmount} ${supply.underlying}`)
     console.log(`- debt: ${debtAmount * CLOSE_FACTOR} ${borrow.underlying}`)
+
+    if (attempts[user]){
+      attempts[user] += 1;
+    } else {
+      attempts[user] = 1;
+    }
 
     //get swap route
     let swap = (await axios.get(`https://api.liqd.ag/route?tokenA=${supply.underlying}&tokenB=${borrow.underlying}&amountIn=${collateralAmount}&multiHop=true`)).data
