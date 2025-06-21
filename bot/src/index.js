@@ -30,6 +30,7 @@ async function run(){
             attempts[user] = 0;
         }
         if (attempts[wallet.wallet_address] && attempts[wallet.wallet_address] > 3){
+            attempts[user] += 1;
             continue;
         }
 
