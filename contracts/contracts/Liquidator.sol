@@ -78,10 +78,12 @@ contract Liquidator is Ownable, ReentrancyGuard {
             inputAmountFromHops += liqParams.hops[0][i].amountIn;
         }
         if (inputAmountFromHops > balance) {
-            liqParams.hops[0][0].amountIn -= (inputAmountFromHops - balance);
+            uint256 diff = inputAmountFromHops - balance;
+            liqParams.hops[0][0].amountIn -= diff;
         }
         if (balance > inputAmountFromHops){
-            liqParams.hops[0][0].amountIn += (inputAmountFromHops - balance);
+            uint256 diff = balance - inputAmountFromHops;
+            liqParams.hops[0][0].amountIn += diff;
         }
 
         //swap
